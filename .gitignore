@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# uv / virtualenvs
+.venv/
+
+# OS
+.DS_Store
+
+# Local, not part of the repo
+benchmark_out/
+/certificates/
+*.log
+.claude/
+CLAUDE.md
+podman_run.sh

@@ -1,0 +1,34 @@
+# Podman-compatible compose file for the mipcc-iis-checker benchmark harness.
+#
+# Run rootless with the container UID mapped 1:1 to your host UID, so the
+# bind-mounted directories below (owned by you on the host) are readable and
+# writable by the container's non-root `appuser` (uid 1000) without extra
+# chown/chmod steps:
+#
+#   podman compose --userns=keep-id run --rm checker \
+#       --instance-dir /data/instances --solution-dir /data/solutions
+#
+# (or `podman-compose`, if that's the tool in use; `--userns=keep-id` is
+# passed the same way). Without keep-id, rootless Podman still maps
+# container uid 1000 into your subuid range, but it usually won't line up
+# with the host ownership of freshly created bind mounts.
+services:
+  checker:
+    build: .
+    image: mipcc-iis-checker
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      - IIS_BENCH_DIR=/data/benchmark_out
+    volumes:
+      # Read-only: the checker only ever reads instances and solutions.
+      - ./public_iis:/data/instances:ro
+      - ./solutions:/data/solutions:ro
+      # Writable: where --out-dir / $IIS_BENCH_DIR results are written.
+      - ./benchmark_out:/data/benchmark_out
+    # Example default; override on the command line as needed, e.g.:
+    #   podman compose run --rm checker --instance-dir /data/instances \
+    #       --solution-dir /data/solutions --solver scip
+    command: ["--instance-dir", "/data/instances", "--solution-dir", "/data/solutions"]

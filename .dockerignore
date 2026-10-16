@@ -1,0 +1,12 @@
+# Keep local files out of the build context; the Dockerfiles copy only what they name.
+.git
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+*.log
+.claude/
+CLAUDE.md
+podman_run.sh
+/certificates/
+benchmark_out/
