@@ -24,7 +24,10 @@ from mipcc_iis_checker.backend import (  # noqa: E402
     HAS_GUROBI,
     HAS_HIGHS,
     HAS_SCIP,
+    MAX_TOLERANCE,
+    STATUS_FEASIBLE,
     STATUS_INFEASIBLE,
+    AmbiguousInstanceError,
     UnsupportedInstanceError,
     get_backend,
 )
@@ -450,3 +453,120 @@ def test_an_objective_only_section_is_refused_by_every_backend(
 
     with pytest.raises(UnsupportedInstanceError, match=section):
         get_backend(solver=solver).load_mps(str(mps))
+
+
+# --------------------------------------------------------------------------
+# Constructs the readers read differently are refused by every backend
+# --------------------------------------------------------------------------
+
+
+def _probe_mps(tmp_path: Path, *, x_coeff="1.0", rhs="    RHS       r0        -5.0", bounds=""):
+    """``x + y >= -5`` with ``x``'s coefficient, the RHS line and BOUNDS swappable."""
+    mps = tmp_path / "probe.mps"
+    mps.write_text(
+        "NAME          PROBE\n"
+        "ROWS\n"
+        " N  OBJ\n"
+        " G  r0\n"
+        "COLUMNS\n"
+        f"    x         OBJ       1e-12      r0        {x_coeff}\n"
+        "    y         OBJ       1.0        r0        1.0\n"
+        "RHS\n"
+        f"{rhs}\n"
+        "    RHS       OBJ       1e-12\n"
+        "BOUNDS\n"
+        f"{bounds}"
+        "ENDATA\n"
+    )
+    return mps
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # Gurobi makes the lower bound -inf; SCIP and HiGHS keep 0, an empty domain.
+        dict(bounds=" UP BND       x         -1.0\n"),
+        dict(bounds=" UI BND       x         -1.0\n"),
+        # SCIP and HiGHS drop the coefficient, Gurobi keeps it.
+        dict(x_coeff="1e-9"),
+        dict(x_coeff="-1e-10"),
+        # SCIP rounds these to 0, Gurobi and HiGHS keep them.
+        dict(rhs="    RHS       r0        1e-10"),
+        dict(bounds=" LO BND       x         1e-10\n"),
+        # Gurobi refuses a line without its set name; SCIP reads the column as the
+        # set name and loses the bound.
+        dict(bounds=" UP x -1.0\n LO x -3.0\n"),
+        dict(bounds=" MI x\n"),
+        dict(rhs="    r0        -5.0"),
+    ],
+    ids=[
+        "negative-UP",
+        "negative-UI",
+        "coefficient-1e-9",
+        "coefficient-minus-1e-10",
+        "rhs-1e-10",
+        "bound-1e-10",
+        "UP-without-set-name",
+        "MI-without-set-name",
+        "RHS-without-set-name",
+    ],
+)
+def test_an_ambiguous_instance_is_refused_by_every_backend(tmp_path: Path, solver: str, case: dict):
+    """The instance would depend on which solver read it, and so would every verdict."""
+    with pytest.raises(AmbiguousInstanceError):
+        get_backend(solver=solver).load_mps(str(_probe_mps(tmp_path, **case)))
+
+
+@pytest.mark.skipif(len(_INSTALLED) < 2, reason="needs two backends to compare")
+@pytest.mark.parametrize(
+    "case",
+    [
+        # Any lower bound given, even 0, settles a negative upper bound for every reader.
+        dict(bounds=" LO BND       x         0.0\n UP BND       x         -1.0\n"),
+        dict(bounds=" UP BND       x         -1.0\n MI BND       x\n"),
+        dict(bounds=" LO BND       x         -3.0\n UP BND       x         -1.0\n"),
+        # Small but past the readers' zero threshold.
+        dict(x_coeff="2e-9", rhs="    RHS       r0        2e-9"),
+    ],
+    ids=["LO-0-then-UP", "UP-then-MI", "LO-then-UP", "values-2e-9"],
+)
+def test_an_unambiguous_neighbour_loads_alike_on_every_backend(tmp_path: Path, case: dict):
+    """The refusals are no broader than the disagreement.
+
+    The tiny objective coefficient and constant are dropped with the objective, so
+    they are no reason to refuse.
+    """
+    mps = _probe_mps(tmp_path, **case)
+    facts = {}
+    for name in _INSTALLED:
+        backend = get_backend(solver=name)
+        backend.load_mps(str(mps))
+        facts[name] = _model_facts(backend.np_model)
+
+    first, *rest = _INSTALLED
+    for other in rest:
+        assert facts[other] == facts[first], f"{other} disagrees with {first} about the instance"
+
+
+@pytest.mark.parametrize("tolerance", [MAX_TOLERANCE, 1e-12])
+def test_every_backend_takes_the_whole_tolerance_range(
+    tmp_path: Path, solver: str, tolerance: float
+):
+    """The tolerance is the solver's too, so each backend must accept both ends of it."""
+    bounds = (
+        " UP BND       x         -10.0\n"
+        " LO BND       x         -20.0\n"
+        " UP BND       y         1.0\n"
+    )
+    backend = get_backend(solver=solver)
+    backend.load_mps(str(_probe_mps(tmp_path, bounds=bounds)))
+    m = backend.np_model
+    # x + y >= -5 with x <= -10 and y <= 1 is infeasible; without y's upper bound it is not.
+    status, _ = backend.solve_subsystem(
+        m.rows, m.lower_bounds, m.upper_bounds, m.integers, tolerance=tolerance
+    )
+    assert status == STATUS_INFEASIBLE
+    status, _ = backend.solve_subsystem(
+        m.rows, m.lower_bounds, m.upper_bounds - {"y"}, m.integers, tolerance=tolerance
+    )
+    assert status == STATUS_FEASIBLE

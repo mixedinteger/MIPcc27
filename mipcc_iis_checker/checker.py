@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
 
-import numpy as np
-
 from ._version import __version__
 from .backend import (
+    DEFAULT_TOLERANCE,
+    MAX_TOLERANCE,
     STATUS_ERROR,
     STATUS_INFEASIBLE,
     STATUS_UNKNOWN,
@@ -24,11 +24,6 @@ from .backend import (
 )
 from .io import parse_solution_file
 from .naming import MPS_EXTENSIONS, mps_extension
-
-# Absolute feasibility tolerance for certificates: slack allowed on each row and
-# bound, and distance allowed from the nearest integer.  The competition's rule,
-# stated in SOLUTION_FORMAT.md; changing it changes which submissions pass.
-DEFAULT_TOLERANCE = 1e-5
 
 # Solver statuses that decide nothing (neither feasible nor infeasible).
 _INCONCLUSIVE_STATUSES = frozenset((STATUS_UNKNOWN, STATUS_ERROR))
@@ -242,10 +237,19 @@ def _check_subsystem_infeasibility(
     res: VerificationResult,
     time_limit: Optional[float] = None,
 ) -> None:
-    """Record the solver's verdict on the kept subsystem in *res*."""
+    """Record the solver's verdict on the kept subsystem in *res*.
+
+    A FEASIBLE verdict is held to the certificate tolerance: the solver's point must
+    satisfy the subsystem to within ``res.tolerance``.
+    """
     try:
         subsystem_status, solve_time = backend.solve_subsystem(
-            kept_rows, kept_lower_bounds, kept_upper_bounds, kept_integers, time_limit=time_limit
+            kept_rows,
+            kept_lower_bounds,
+            kept_upper_bounds,
+            kept_integers,
+            time_limit=time_limit,
+            tolerance=res.tolerance,
         )
     except Exception as e:  # an unusable solver is inconclusive, not a failed submission
         res.stats.solver_status = STATUS_ERROR
@@ -357,13 +361,16 @@ def verify_subsystem(
     Certificates are verified whatever the infeasibility solve returned: the two
     verdicts are independent and certificate checking needs no solver.
 
-    tolerance   absolute feasibility tolerance for certificates.
+    tolerance   absolute feasibility tolerance for certificates and for the solver's
+                witness of feasibility; at most MAX_TOLERANCE (1e-2).
     solver      "" auto-selects, else "gurobi" / "scip" / "highs".
     time_limit  seconds for the infeasibility solve; hitting it leaves
                 is_infeasible=None (inconclusive, not a failure).
     """
-    if not (tolerance > 0) or not np.isfinite(tolerance):
-        raise ValueError(f"tolerance must be a positive finite float, got {tolerance!r}")
+    if not (0 < tolerance <= MAX_TOLERANCE):
+        raise ValueError(
+            f"tolerance must be positive and at most {MAX_TOLERANCE:g}, got {tolerance!r}"
+        )
 
     res = VerificationResult(tolerance=tolerance)
 

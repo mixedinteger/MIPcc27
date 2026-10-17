@@ -5,7 +5,6 @@ gurobipy.read() extracts the instance into an NpModel; each subsystem solve slic
 those arrays and hands them to gp.loadModel in one call.
 """
 
-from collections.abc import Set as AbstractSet
 from typing import Optional
 
 import numpy as np
@@ -22,7 +21,7 @@ from .base import (
     NpModel,
     UnsupportedInstanceError,
     _membership_mask,
-    check_sections,
+    check_mps,
     validate_instance,
 )
 
@@ -44,7 +43,7 @@ class GurobipyBackend(BaseBackend):
     name = "gurobi"
 
     def load_mps(self, filepath: str) -> None:
-        check_sections(filepath)
+        check_mps(filepath)
         with gp.Env(params={"OutputFlag": 0}) as env:
             with gp.read(filepath, env=env) as raw:
                 var_names = np.array(raw.getAttr("VarName", raw.getVars()), dtype=object)
@@ -84,18 +83,9 @@ class GurobipyBackend(BaseBackend):
             constraint_names=constr_names,
         )
 
-    def solve_subsystem(
-        self,
-        kept_rows: AbstractSet[str],
-        kept_lower_bounds: AbstractSet[str],
-        kept_upper_bounds: AbstractSet[str],
-        kept_integers: AbstractSet[str],
-        time_limit: Optional[float] = None,
-    ) -> tuple[str, float]:
-        sub = self.np_model.sub_system(
-            kept_rows, kept_lower_bounds, kept_upper_bounds, kept_integers
-        )
-
+    def _solve(
+        self, sub: NpModel, solver_tolerance: float, time_limit: Optional[float]
+    ) -> tuple[str, Optional[list[float]], float]:
         sub_lb = np.where(sub.is_integer & np.isinf(sub.lb), -_INT_BOUND_M, sub.lb)
         sub_ub = np.where(sub.is_integer & np.isinf(sub.ub), _INT_BOUND_M, sub.ub)
         vtype = np.where(sub.is_integer, gp.GRB.INTEGER, gp.GRB.CONTINUOUS)
@@ -114,20 +104,24 @@ class GurobipyBackend(BaseBackend):
                 sense=sub.senses,
                 rhs=sub.rhs,
             ) as m:
+                m.Params.FeasibilityTol = solver_tolerance
+                m.Params.IntFeasTol = solver_tolerance
                 if time_limit is not None:
                     m.Params.TimeLimit = time_limit
                 m.optimize()
-                status = m.Status
+                runtime = m.Runtime
 
-                if status == gp.GRB.INF_OR_UNBD:
+                if m.Status == gp.GRB.INF_OR_UNBD:
+                    # The objective is zero, so "or unbounded" is moot; telling the
+                    # two apart takes a solve without dual reductions.
                     m.Params.DualReductions = 0
+                    if time_limit is not None:
+                        m.Params.TimeLimit = max(time_limit - runtime, 0.0)
                     m.optimize()
-                    status = m.Status
+                    runtime += m.Runtime
 
-                if status == gp.GRB.INFEASIBLE:
-                    return STATUS_INFEASIBLE, m.Runtime
-                if status in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL, gp.GRB.UNBOUNDED) or (
-                    status == gp.GRB.TIME_LIMIT and m.SolCount > 0
-                ):
-                    return STATUS_FEASIBLE, m.Runtime
-                return STATUS_UNKNOWN, m.Runtime
+                if m.Status == gp.GRB.INFEASIBLE:
+                    return STATUS_INFEASIBLE, None, runtime
+                if m.SolCount > 0:
+                    return STATUS_FEASIBLE, m.getAttr("X", m.getVars()), runtime
+                return STATUS_UNKNOWN, None, runtime

@@ -30,6 +30,7 @@ A submission is a program, preferably a container image.
 
 - Exit with status `0` once `SOLUTION` is written. A non-zero exit, a timeout, or no solution file
   is a failed run, and nothing is checked.
+- Don't exit with status `125`; podman reserves it for its own errors.
 - Only a solution the [checker](README.md#check-your-solutions) passes counts. Use it to check your
   own output. The checker time is not included in your computing time.
 

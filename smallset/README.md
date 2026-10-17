@@ -1,6 +1,6 @@
 # smallset
 
-A sample of 62 small infeasible models, with one solution for each, to try the checker on.
+A sample of 50 small infeasible models, with one solution for each, to try the checker on.
 
 - `models/<name>.mps.gz`: the model.
 - `certificates/<name>.json.gz`: a solution for it, in the [solution format](../SOLUTION_FORMAT.md).
@@ -53,8 +53,8 @@ scheduling using integer programming", PLDI 2000). Several are also in MIPLIB 20
 > H. H. Hoos and T. Stützle (2000), "SATLIB: An Online Resource for Research on SAT", in _SAT 2000_,
 > IOS Press, 283–292.
 
-**Pseudo-Boolean** (7), pseudo-Boolean benchmark instances written as 0-1 programs:
-`normalized-11alg_arraycomm_less`, `normalized-3_4_13`, `normalized-domset-hexgrid_03_052`,
-`normalized-domset-stargod_09_084`, `normalized-grid4_31.shuf-2`,
-`normalized-sumineqArity4houseP016`, `normalized-vertexcover-grid10x19-hard`.
+**Pseudo-Boolean** (6), pseudo-Boolean benchmark instances written as 0-1 programs:
+`normalized-3_4_13`, `normalized-domset-hexgrid_03_052`, `normalized-domset-stargod_09_084`,
+`normalized-grid4_31.shuf-2`, `normalized-sumineqArity4houseP016`,
+`normalized-vertexcover-grid10x19-hard`.
 

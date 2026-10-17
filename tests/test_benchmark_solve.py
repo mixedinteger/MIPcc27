@@ -247,6 +247,47 @@ def test_a_timed_out_container_is_killed_through_the_same_podman(corpus):
     assert kills and all(c.startswith("--root /r kill --signal ") for c in kills)
 
 
+def _exiting_podman(corpus, code):
+    """A fake podman whose "run" exits with *code*, counting its launches."""
+    podman = corpus["tmp"] / "podman"
+    runs = corpus["tmp"] / "runs"
+    podman.write_text(f'#!/bin/sh\n[ "$1" = run ] && echo x >> {runs}\nexit {code}\n')
+    podman.chmod(0o755)
+    return Launcher(image="team:1", podman=(str(podman),)), runs
+
+
+def test_podman_failing_to_run_the_container_is_the_harness_s_problem(corpus, monkeypatch):
+    """Exit 125 is podman's own error -- e.g. a cgroup it cannot set up on this node.
+
+    The program never ran, so it is no verdict against the submission: not
+    reused, and the run does not end as if every model had been decided.
+    """
+    launcher, runs = _exiting_podman(corpus, 125)
+    rec = _solve(corpus, launcher)
+    assert rec["status"] == "solve_error" and "podman" in rec["error"]
+
+    monkeypatch.setattr(bench, "_run_verify", _fake_checker([]))
+    _run_one(corpus, launcher)
+    _run_one(corpus, launcher)
+    assert runs.read_text().count("x") == 3  # relaunched every time
+    assert _report(corpus)["status"] == "solve_error"
+
+
+@pytest.mark.parametrize("code", [1, 126, 127])
+def test_a_container_that_fails_by_itself_is_a_failed_run(corpus, code):
+    """Its program's exit, or an entrypoint the image lacks: the submission's fault."""
+    launcher, _ = _exiting_podman(corpus, code)
+    assert _solve(corpus, launcher)["status"] == "solve_failed"
+
+
+def test_exit_125_from_a_command_template_is_the_program_s_own(corpus, tmp_path):
+    """Only podman reserves 125; a --solve-cmd program may exit with anything."""
+    script = tmp_path / "exit125.py"
+    script.write_text("import sys; sys.exit(125)")
+    launcher = Launcher(template=(sys.executable, str(script), "{instance}", "{solution}"))
+    assert _solve(corpus, launcher)["status"] == "solve_failed"
+
+
 def test_a_launcher_is_a_command_or_an_image():
     with pytest.raises(ValueError):
         Launcher()

@@ -5,7 +5,6 @@ highspy's own ``readModel``/``getLp`` extracts the instance into an NpModel;
 each subsystem solve slices those arrays and builds a fresh ``HighsLp`` from them.
 """
 
-from collections.abc import Set as AbstractSet
 from typing import Optional
 
 import numpy as np
@@ -21,7 +20,7 @@ from .base import (
     BaseBackend,
     NpModel,
     UnsupportedInstanceError,
-    check_sections,
+    check_mps,
     validate_instance,
 )
 
@@ -46,7 +45,7 @@ class HighsBackend(BaseBackend):
     name = "highs"
 
     def load_mps(self, filepath: str) -> None:
-        check_sections(filepath)
+        check_mps(filepath)
         h = _quiet(self.verbose)
         # HiGHS's own MPS parser refuses, rather than reads, a matrix coefficient
         # past "large_matrix_value". Set to infinity.
@@ -113,18 +112,9 @@ class HighsBackend(BaseBackend):
             constraint_names=constr_names,
         )
 
-    def solve_subsystem(
-        self,
-        kept_rows: AbstractSet[str],
-        kept_lower_bounds: AbstractSet[str],
-        kept_upper_bounds: AbstractSet[str],
-        kept_integers: AbstractSet[str],
-        time_limit: Optional[float] = None,
-    ) -> tuple[str, float]:
-        sub = self.np_model.sub_system(
-            kept_rows, kept_lower_bounds, kept_upper_bounds, kept_integers
-        )
-
+    def _solve(
+        self, sub: NpModel, solver_tolerance: float, time_limit: Optional[float]
+    ) -> tuple[str, Optional[list[float]], float]:
         n_vars = len(sub.variable_names)
         n_rows = len(sub.constraint_names)
 
@@ -154,6 +144,9 @@ class HighsBackend(BaseBackend):
         lp.a_matrix_ = mat
 
         h = _quiet(self.verbose)
+        # The LP tolerance, and the MIP one HiGHS checks rows and integrality with.
+        h.setOptionValue("primal_feasibility_tolerance", solver_tolerance)
+        h.setOptionValue("mip_feasibility_tolerance", solver_tolerance)
         if time_limit is not None:
             h.setOptionValue("time_limit", time_limit)
         h.passModel(lp)
@@ -162,20 +155,10 @@ class HighsBackend(BaseBackend):
         runtime = h.getRunTime()
 
         if model_status == highspy.HighsModelStatus.kInfeasible:
-            return STATUS_INFEASIBLE, runtime
-        if model_status in (
-            highspy.HighsModelStatus.kOptimal,
-            highspy.HighsModelStatus.kUnbounded,
-            highspy.HighsModelStatus.kObjectiveBound,
-            highspy.HighsModelStatus.kObjectiveTarget,
-            highspy.HighsModelStatus.kSolutionLimit,
-        ) or (
-            model_status
-            in (highspy.HighsModelStatus.kTimeLimit, highspy.HighsModelStatus.kIterationLimit)
-            and h.getInfo().primal_solution_status == highspy.SolutionStatus.kSolutionStatusFeasible
-        ):
-            return STATUS_FEASIBLE, runtime
-        return STATUS_UNKNOWN, runtime
+            return STATUS_INFEASIBLE, None, runtime
+        if h.getInfo().primal_solution_status == highspy.SolutionStatus.kSolutionStatusFeasible:
+            return STATUS_FEASIBLE, list(h.getSolution().col_value), runtime
+        return STATUS_UNKNOWN, None, runtime
 
 
 def _senses_and_rhs(

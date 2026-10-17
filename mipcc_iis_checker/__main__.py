@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, verify_subsystem
+from .backend import MAX_TOLERANCE
 from .checker import DEFAULT_TOLERANCE
 from .naming import MPS_EXTENSIONS, mps_extension
 
@@ -49,7 +50,8 @@ def main():
         type=float,
         default=DEFAULT_TOLERANCE,
         help=(
-            "Absolute feasibility tolerance for certificate verification"
+            "Absolute feasibility tolerance for certificates and for the solver's point"
+            f" proving a subsystem feasible, at most {MAX_TOLERANCE:g}"
             f" (default: {DEFAULT_TOLERANCE:g}, the competition's rule; judging uses the default)."
         ),
     )
@@ -88,8 +90,10 @@ def main():
     if not Path(args.solution).exists():
         parser.error(f"Solution file not found: {args.solution}")
 
-    if not (args.tolerance > 0) or args.tolerance == float("inf"):
-        parser.error(f"--tolerance must be a positive finite float, got {args.tolerance}")
+    if not (0 < args.tolerance <= MAX_TOLERANCE):
+        parser.error(
+            f"--tolerance must be positive and at most {MAX_TOLERANCE:g}, got {args.tolerance}"
+        )
 
     if args.time_limit is not None and args.time_limit <= 0:
         parser.error(f"--time-limit must be positive, got {args.time_limit}")

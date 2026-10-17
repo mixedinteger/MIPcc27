@@ -55,6 +55,10 @@ Both top-level keys (`rows`, `columns`) are optional, and so is every key nested
 (`lower_bound`, `upper_bound`, `integrality`). **Elements not listed default to `{"action": "keep"}`
 with no certificate.**
 
+The file is read strictly, and one wrong entry rejects the whole file: no keys other than the ones
+above, no key given twice in the same object, certificate values that are JSON numbers (not strings,
+`true`/`false` or `null`), and no certificate on a `"relax"` entry.
+
 ---
 
 ## Certificates

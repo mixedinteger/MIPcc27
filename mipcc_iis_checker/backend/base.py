@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from fractions import Fraction
 from functools import cached_property
 from typing import ClassVar, Optional
 
@@ -20,6 +21,21 @@ STATUS_INFEASIBLE = "INFEASIBLE"
 STATUS_FEASIBLE = "FEASIBLE"
 STATUS_UNKNOWN = "UNKNOWN"
 STATUS_ERROR = "ERROR"
+
+# Absolute feasibility tolerance: slack allowed on each row and bound, and distance
+# allowed from the nearest integer.  The competition's rule, stated in
+# SOLUTION_FORMAT.md; changing it changes which submissions pass.  Certificates are
+# held to it, and so is the point a solver offers as proof that a subsystem is feasible.
+DEFAULT_TOLERANCE = 1e-5
+
+# The loosest tolerance accepted: the solvers are run at it too, and Gurobi takes a
+# feasibility tolerance of at most 1e-2.
+MAX_TOLERANCE = 1e-2
+
+# Solver tolerances are relative or applied to a scaled model, so a point a solver
+# calls feasible can still miss DEFAULT_TOLERANCE on the original rows.  Such a point
+# earns one more solve at this tighter tolerance, the smallest Gurobi takes.
+RETRY_SOLVER_TOLERANCE = 1e-9
 
 
 class UnsupportedInstanceError(ValueError):
@@ -33,7 +49,7 @@ class UnsupportedInstanceError(ValueError):
 
     The ``N`` objective row is dropped on purpose — the checker only asks feasibility
     questions — but an objective needing a section of its own (``QUADOBJ``, ``PWLOBJ``)
-    is refused all the same, because ``check_sections`` does not tell an objective
+    is refused all the same, because ``check_mps`` does not tell an objective
     section from a constraint one.
     """
 
@@ -45,6 +61,25 @@ class UnsupportedInstanceError(ValueError):
         )
         self.filepath = filepath
         self.unsupported = dict(unsupported)
+
+
+class AmbiguousInstanceError(UnsupportedInstanceError):
+    """The instance is written in a way the backends' MPS readers read differently.
+
+    Each backend parses the file with its own solver's reader, so a construct the
+    readers disagree on would make the instance — and every verdict on it — depend
+    on which solver is installed.  Such an instance is refused by every backend.
+    """
+
+    def __init__(self, filepath: str, ambiguous: Mapping[str, int]) -> None:
+        kinds = ", ".join(f"{kind} ({count})" for kind, count in sorted(ambiguous.items()))
+        ValueError.__init__(
+            self,
+            f"Instance '{filepath}' is read differently by different MPS readers: {kinds}."
+            " Write the value out explicitly (or drop it) so that every reader agrees.",
+        )
+        self.filepath = filepath
+        self.unsupported = dict(ambiguous)
 
 
 def validate_instance(filepath: str, constraint_names, variable_names, A, rhs, senses) -> None:
@@ -86,24 +121,126 @@ _SUPPORTED_SECTIONS = frozenset(
     {"NAME", "ROWS", "COLUMNS", "RHS", "BOUNDS", "ENDATA", "OBJSENSE", "OBJSENS"}
 )
 
+# A nonzero value this small or smaller is zero to some readers only: SCIP and HiGHS
+# drop such a coefficient and SCIP rounds such a right-hand side or bound to 0, while
+# Gurobi keeps them all.
+_TINY_VALUE = 1e-9
 
-def check_sections(filepath: str) -> None:
-    """Refuse the instance if it uses an MPS section outside the supported set.
+# Bound types that carry a value (``type set column value``) and those that do not
+# (``type set column``).  Without its set name a line is one field short: Gurobi
+# refuses it and SCIP reads the column as the set name, while HiGHS accepts it.
+_VALUED_BOUND_TYPES = frozenset({"UP", "LO", "FX", "LI", "UI"})
+_LOWER_BOUND_TYPES = frozenset({"LO", "LI", "MI", "FR", "FX", "BV"})
 
-    Section headers start in column 1, data lines are indented, and ``*`` in column 1
-    is a comment.
+_AMBIGUOUS_TINY = f"nonzero values of magnitude at most {_TINY_VALUE:g}"
+_AMBIGUOUS_NEGATIVE_UP = "negative upper bounds on columns with no lower bound given"
+_AMBIGUOUS_NO_SET_NAME = "RHS or BOUNDS lines without a set name"
+
+
+def _number(field: str) -> float:
+    """*field* as a number, or NaN (which compares false) if it is not one.
+
+    A field that is not a number is the reader's to report.
+    """
+    try:
+        return float(field)
+    except ValueError:
+        return float("nan")
+
+
+def _is_tiny(field: str) -> bool:
+    """Whether *field* is a nonzero number of magnitude at most ``_TINY_VALUE``."""
+    return 0 < abs(_number(field)) <= _TINY_VALUE
+
+
+def check_mps(filepath: str) -> None:
+    """Refuse the instance if it uses an unsupported section or an ambiguous construct.
+
+    The section check is a whitelist (see ``_SUPPORTED_SECTIONS``).  The ambiguity
+    check refuses what the backends' readers would read differently, so the instance
+    is the same whichever backend loads it:
+
+    - a nonzero value of magnitude at most ``_TINY_VALUE`` in COLUMNS, RHS or BOUNDS;
+    - a negative ``UP``/``UI`` bound on a column given no lower bound: Gurobi then
+      makes the lower bound -inf, SCIP and HiGHS keep 0 (an empty domain);
+    - an RHS or BOUNDS line without its set name.
+
+    Objective (``N``) rows are skipped, since the checker drops the objective.  Lines
+    whose field count does not fit the free format (names with spaces in fixed MPS)
+    are left to the reader.  Section headers start in column 1, data lines are
+    indented, and ``*`` in column 1 is a comment.
     """
     opener = gzip.open if str(filepath).endswith(".gz") else open
     found: list[str] = []
+    ambiguous: dict[str, int] = {}
+    objective_rows: set[str] = set()
+    negative_up: set[str] = set()
+    has_lower: set[str] = set()
+    section = ""
+
+    def flag(kind: str) -> None:
+        ambiguous[kind] = ambiguous.get(kind, 0) + 1
+
+    def check_values(pairs: list[str]) -> None:
+        # (row, value) pairs; the objective row's values are dropped with it.
+        for row, value in zip(pairs[::2], pairs[1::2]):
+            if row not in objective_rows and _is_tiny(value):
+                flag(_AMBIGUOUS_TINY)
+
     with opener(filepath, "rt", errors="replace") as handle:
         for line in handle:
-            if not line[:1].strip() or line.startswith("*"):
+            if not line.strip() or line.startswith("*"):
                 continue
-            section = line.split()[0].upper()
-            if section not in _SUPPORTED_SECTIONS and section not in found:
-                found.append(section)
+            fields = line.split()
+            if line[:1].strip():
+                section = fields[0].upper()
+                if section not in _SUPPORTED_SECTIONS and section not in found:
+                    found.append(section)
+                continue
+
+            if section == "ROWS" and len(fields) == 2 and fields[0].upper() == "N":
+                objective_rows.add(fields[1])
+            elif section == "COLUMNS" and len(fields) in (3, 5):
+                if not any(f.strip("'\"").upper() == "MARKER" for f in fields):
+                    check_values(fields[1:])
+            elif section == "RHS":
+                if len(fields) in (2, 4):
+                    flag(_AMBIGUOUS_NO_SET_NAME)
+                elif len(fields) in (3, 5):
+                    check_values(fields[1:])
+            elif section == "BOUNDS":
+                kind = fields[0].upper()
+                valued = kind in _VALUED_BOUND_TYPES
+                if len(fields) < (4 if valued else 3):
+                    flag(_AMBIGUOUS_NO_SET_NAME)
+                    continue
+                column = fields[2]
+                if kind in _LOWER_BOUND_TYPES:
+                    has_lower.add(column)
+                if valued and len(fields) == 4:
+                    if _is_tiny(fields[3]):
+                        flag(_AMBIGUOUS_TINY)
+                    if kind in ("UP", "UI") and _number(fields[3]) < 0:
+                        negative_up.add(column)
+
     if found:
         raise UnsupportedInstanceError(filepath, {f"{name} section": 1 for name in found})
+    if negative_up - has_lower:
+        ambiguous[_AMBIGUOUS_NEGATIVE_UP] = len(negative_up - has_lower)
+    if ambiguous:
+        raise AmbiguousInstanceError(filepath, ambiguous)
+
+
+# Half the gap between 1.0 and the next double: the relative error of one rounding.
+_UNIT_ROUNDOFF = np.finfo(np.float64).eps / 2
+
+
+def _fmt(value, spec: str = ".15g") -> str:
+    """*value* (a float or Fraction) formatted as a float, even past float range."""
+    try:
+        return format(float(value), spec)
+    except OverflowError:
+        return "-huge" if value < 0 else "huge"
 
 
 def _membership_mask(names: np.ndarray, wanted: AbstractSet[str]) -> np.ndarray:
@@ -244,18 +381,21 @@ class NpModel:
         senses = self.senses.astype("U1")
         is_le = np.isin(senses, ("<", "="))
         is_ge = np.isin(senses, (">", "="))
-        lhs = self.A @ x
-        slack = lhs - self.rhs
-        bad_rows = np.flatnonzero((is_le & (slack > tolerance)) | (is_ge & (slack < -tolerance)))
-        for k in bad_rows:
+        slack, violated = self._row_slacks(x, is_le, is_ge, tolerance)
+        for k in np.flatnonzero(violated):
             if kind == "row" and k == skip:
                 ignored_was_violated = True
                 continue
             op = {"<": ">", ">": "<", "=": "!="}[senses[k]]
             name = self.constraint_names[k]
+            lhs = (
+                slack[k] + Fraction(float(self.rhs[k]))
+                if isinstance(slack[k], Fraction)
+                else slack[k] + self.rhs[k]
+            )
             violations.append(
-                f"constraint {name!r}: lhs {lhs[k]:.15g} {op} rhs {self.rhs[k]:.15g}"
-                f" (violation {abs(slack[k]):.3g})"
+                f"constraint {name!r}: lhs {_fmt(lhs)} {op} rhs {self.rhs[k]:.15g}"
+                f" (violation {_fmt(abs(slack[k]), '.3g')})"
             )
 
         # --- Bound constraints (±inf bounds are vacuous — skip them) ---
@@ -294,6 +434,51 @@ class NpModel:
             )
 
         return not violations, violations
+
+    def _row_slacks(
+        self, x: np.ndarray, is_le: np.ndarray, is_ge: np.ndarray, tolerance: float
+    ) -> tuple[list, np.ndarray]:
+        """Each row's ``activity - rhs`` at *x*, and whether it breaks *tolerance*.
+
+        The floating-point activity carries a rounding error, and with large enough
+        values that error decides the outcome: ``1 + 1e300 - 1e300`` computes as 0,
+        and products can overflow.  Each row's error is bounded (a sum of n products
+        is off by at most about ``n * eps/2`` times the sum of their magnitudes); a
+        row whose verdict that error could flip is recomputed exactly, in rationals.
+        Honest points never get near the bound, so the exact path is rare.
+
+        Rows with an infinite rhs are vacuous: never violated.  Returned slacks are
+        floats, or Fractions where the row was recomputed.
+        """
+        finite = np.isfinite(self.rhs)
+        with np.errstate(over="ignore", invalid="ignore"):
+            slack = self.A @ x - self.rhs
+            magnitude = abs(self.A) @ np.abs(x) + np.abs(np.where(finite, self.rhs, 0.0))
+            # Twice the textbook bound, to cover rounding in computing the bound itself.
+            error = 2 * (np.diff(self.A.indptr) + 2) * _UNIT_ROUNDOFF * magnitude
+            violated = finite & ((is_le & (slack > tolerance)) | (is_ge & (slack < -tolerance)))
+            undecided = finite & (
+                ~np.isfinite(slack)
+                | ~np.isfinite(error)
+                | (is_le & (np.abs(slack - tolerance) <= error))
+                | (is_ge & (np.abs(slack + tolerance) <= error))
+            )
+
+        slack = slack.tolist()
+        exact_tolerance = Fraction(tolerance)
+        for k in np.flatnonzero(undecided):
+            start, end = self.A.indptr[k], self.A.indptr[k + 1]
+            coefficients = self.A.data[start:end].tolist()
+            values = x[self.A.indices[start:end]].tolist()
+            exact = sum(
+                (Fraction(a) * Fraction(v) for a, v in zip(coefficients, values)),
+                -Fraction(float(self.rhs[k])),
+            )
+            slack[k] = exact
+            violated[k] = (is_le[k] and exact > exact_tolerance) or (
+                is_ge[k] and exact < -exact_tolerance
+            )
+        return slack, violated
 
     def sub_system(
         self,
@@ -347,7 +532,6 @@ class BaseBackend(ABC):
             raise RuntimeError("No instance loaded; call load_mps() first")
         return self._np_model
 
-    @abstractmethod
     def solve_subsystem(
         self,
         kept_rows: AbstractSet[str],
@@ -355,10 +539,46 @@ class BaseBackend(ABC):
         kept_upper_bounds: AbstractSet[str],
         kept_integers: AbstractSet[str],
         time_limit: Optional[float] = None,
+        tolerance: float = DEFAULT_TOLERANCE,
     ) -> tuple[str, float]:
         """Return ``(status, solver_seconds)``.
 
-        A ``time_limit`` that expires without a verdict yields
-        :data:`STATUS_UNKNOWN` — inconclusive, not a failed submission.
+        :data:`STATUS_FEASIBLE` needs a witness: the solver's point must satisfy the
+        subsystem to within *tolerance*, absolute, the rule certificates are held to.
+        The solver is run at *tolerance* too, but its tolerances are relative or
+        scaled, so a point that misses earns one more solve at
+        :data:`RETRY_SOLVER_TOLERANCE`; a point that misses again is
+        :data:`STATUS_UNKNOWN`.  So is a ``time_limit`` that expires without a
+        verdict — inconclusive, not a failed submission.
         """
-        pass
+        sub = self.np_model.sub_system(
+            kept_rows, kept_lower_bounds, kept_upper_bounds, kept_integers
+        )
+        names = sub.variable_names.tolist()
+        seconds = 0.0
+        for solver_tolerance in sorted(
+            {max(tolerance, RETRY_SOLVER_TOLERANCE), RETRY_SOLVER_TOLERANCE}, reverse=True
+        ):
+            remaining = None if time_limit is None else time_limit - seconds
+            if remaining is not None and remaining <= 0:
+                break
+            status, point, solve_seconds = self._solve(sub, solver_tolerance, remaining)
+            seconds += solve_seconds
+            if status != STATUS_FEASIBLE:
+                return status, seconds
+            if point is not None and sub.is_feasible(dict(zip(names, point)), tolerance)[0]:
+                return STATUS_FEASIBLE, seconds
+        return STATUS_UNKNOWN, seconds
+
+    @abstractmethod
+    def _solve(
+        self, sub: NpModel, solver_tolerance: float, time_limit: Optional[float]
+    ) -> tuple[str, Optional[list[float]], float]:
+        """Solve *sub* once; return ``(status, point, solver_seconds)``.
+
+        *status* is :data:`STATUS_INFEASIBLE`, :data:`STATUS_FEASIBLE` — with *point*
+        the solver's solution, one value per variable of *sub* — or
+        :data:`STATUS_UNKNOWN`.  *solver_tolerance* is the primal feasibility and
+        integrality tolerance to solve at, absolute; a solver whose tolerance is
+        relative converts it.
+        """

@@ -12,10 +12,13 @@ whichever solver is installed, and get_backend() reports what is missing.
 """
 
 from .base import (
+    DEFAULT_TOLERANCE,
+    MAX_TOLERANCE,
     STATUS_ERROR,
     STATUS_FEASIBLE,
     STATUS_INFEASIBLE,
     STATUS_UNKNOWN,
+    AmbiguousInstanceError,
     BaseBackend,
     ElementCounts,
     NpModel,
@@ -44,11 +47,14 @@ except ImportError:
     HAS_HIGHS = False
 
 __all__ = [
+    "AmbiguousInstanceError",
     "BaseBackend",
     "ElementCounts",
     "NpModel",
     "UnsupportedInstanceError",
     "get_backend",
+    "DEFAULT_TOLERANCE",
+    "MAX_TOLERANCE",
     "STATUS_INFEASIBLE",
     "STATUS_FEASIBLE",
     "STATUS_UNKNOWN",

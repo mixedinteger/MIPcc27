@@ -74,7 +74,7 @@ It exits `1` when a model has no verdict, as `benchmark.run` does.
 | `solve_failed`       | the program exited non-zero or wrote no solution (`pass = N`); see `logs/`      |
 | `verify_unknown`     | the infeasibility check hit `--verify-time-limit`                               |
 | `verify_error`       | the checker couldn't run: no solver, unreadable instance, solver error          |
-| `solve_error`        | the program couldn't be started (bad `--solve-cmd`, no podman)                  |
+| `solve_error`        | the program couldn't be started (bad `--solve-cmd`, no podman, podman exit 125) |
 | `no_solution`        | no `<model>.json[.gz]` to check                                                 |
 | `instance_not_found` | no `<model>.mps[.gz]` in `--instance-dir`                                       |
 | `not_run`            | collect only: no result yet — the job never ran or hasn't finished              |

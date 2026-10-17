@@ -6,7 +6,6 @@ arrays and builds a fresh SCIP model from them.
 """
 
 import time
-from collections.abc import Set as AbstractSet
 from typing import Optional
 
 import numpy as np
@@ -22,7 +21,7 @@ from .base import (
     BaseBackend,
     NpModel,
     UnsupportedInstanceError,
-    check_sections,
+    check_mps,
     validate_instance,
 )
 
@@ -30,12 +29,18 @@ from .base import (
 _SCIP_INTEGER_VTYPES = frozenset(("INTEGER", "BINARY"))
 _SCIP_SUPPORTED_VTYPES = _SCIP_INTEGER_VTYPES | frozenset(("CONTINUOUS",))
 
+# SCIP's defaults for its zero thresholds, and the floor for the scaled feastol (SCIP
+# accepts down to 1e-17, and needs room below it for epsilon).
+_SCIP_DEFAULT_EPSILON = 1e-9
+_SCIP_DEFAULT_SUMEPSILON = 1e-6
+_SCIP_MIN_FEASTOL = 1e-15
+
 
 class ScipBackend(BaseBackend):
     name = "scip"
 
     def load_mps(self, filepath: str) -> None:
-        check_sections(filepath)
+        check_mps(filepath)
         m = Model("reader")
         m.hideOutput(not self.verbose)
         m.readProblem(filepath)
@@ -122,7 +127,7 @@ class ScipBackend(BaseBackend):
                 rhs[i] = np.inf if lhs_val >= scip_inf else -np.inf
             elif lhs_finite and rhs_finite:
                 # An E row parses both sides from one field, so they are bit-identical;
-                # any difference means RANGES, which check_sections has already refused.
+                # any difference means RANGES, which check_mps has already refused.
                 if lhs_val == rhs_val:
                     senses[i] = "="
                     rhs[i] = rhs_val
@@ -164,20 +169,23 @@ class ScipBackend(BaseBackend):
             constraint_names=constr_names,
         )
 
-    def solve_subsystem(
-        self,
-        kept_rows: AbstractSet[str],
-        kept_lower_bounds: AbstractSet[str],
-        kept_upper_bounds: AbstractSet[str],
-        kept_integers: AbstractSet[str],
-        time_limit: Optional[float] = None,
-    ) -> tuple[str, float]:
-        sub = self.np_model.sub_system(
-            kept_rows, kept_lower_bounds, kept_upper_bounds, kept_integers
-        )
+    def _solve(
+        self, sub: NpModel, solver_tolerance: float, time_limit: Optional[float]
+    ) -> tuple[str, Optional[list[float]], float]:
         m = Model("subsystem")
         m.hideOutput(not self.verbose)
 
+        # SCIP's one primal tolerance covers rows, bounds and integrality, relative to
+        # the magnitude of the values compared.  Divided by the largest of those, it is
+        # at least as tight as the absolute tolerance asked for.  SCIP's zero
+        # thresholds must come down with it, or presolve rounds at its own epsilon.
+        values = np.concatenate((sub.rhs, sub.lb, sub.ub))
+        values = np.abs(values[np.isfinite(values)])
+        scale = max(1.0, float(values.max())) if values.size else 1.0
+        feastol = max(solver_tolerance / scale, _SCIP_MIN_FEASTOL)
+        m.setParam("numerics/feastol", feastol)
+        m.setParam("numerics/epsilon", min(_SCIP_DEFAULT_EPSILON, feastol / 100))
+        m.setParam("numerics/sumepsilon", min(_SCIP_DEFAULT_SUMEPSILON, feastol))
         if time_limit is not None:
             m.setParam("limits/time", time_limit)
 
@@ -217,7 +225,7 @@ class ScipBackend(BaseBackend):
                 if not satisfied:
                     # Infeasible with nothing to assign: say so without a solve.
                     m.freeProb()
-                    return STATUS_INFEASIBLE, 0.0
+                    return STATUS_INFEASIBLE, None, 0.0
                 continue
 
             lhs_expr = sum(float(vals[k]) * scip_vars[cols[k]] for k in range(len(cols)))
@@ -233,14 +241,14 @@ class ScipBackend(BaseBackend):
         runtime = time.perf_counter() - start
 
         scip_status = m.getStatus()
-
-        feasible = scip_status in ("optimal", "bestsollimit", "sollimit", "unbounded") or (
-            scip_status == "timelimit" and m.getNSols() > 0
-        )
+        point = None
+        if scip_status != "infeasible" and m.getNSols() > 0:
+            best = m.getBestSol()
+            point = [m.getSolVal(best, v) for v in scip_vars]
         m.freeProb()
 
         if scip_status == "infeasible":
-            return STATUS_INFEASIBLE, runtime
-        if feasible:
-            return STATUS_FEASIBLE, runtime
-        return STATUS_UNKNOWN, runtime
+            return STATUS_INFEASIBLE, None, runtime
+        if point is not None:
+            return STATUS_FEASIBLE, point, runtime
+        return STATUS_UNKNOWN, None, runtime

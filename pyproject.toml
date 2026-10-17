@@ -1,6 +1,6 @@
 [project]
 name = "mipcc-iis-checker"
-version = "1.0.0b1"
+version = "1.0.0b3"
 description = "MIP Competition 2027 IIS solution checker"
 readme = "README.md"
 license = "CC0-1.0"

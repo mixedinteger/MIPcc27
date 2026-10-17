@@ -36,6 +36,11 @@ SOLVED = "solved"
 SOLVE_FAILURES = frozenset({"solve_timeout", "solve_failed"})
 SOLVE_ERROR = "solve_error"
 
+# The exit code ``podman run`` uses for its own failure (a bad option, a missing image,
+# a cgroup it cannot set up): the program never ran, so it is no verdict on it.  126
+# and 127 (entrypoint not executable or not found) are the image's own fault.
+PODMAN_ERROR_EXIT = 125
+
 # The fields a --solve-cmd template may use.
 TEMPLATE_FIELDS = ("instance", "solution", "name")
 
@@ -245,6 +250,12 @@ def run_solve(name: str, instance: Path, solution_dir: Path, config: SolveConfig
 
         if timed_out:
             rec.update(status="solve_timeout", error="killed at the time limit")
+        elif container is not None and proc.returncode == PODMAN_ERROR_EXIT:
+            rec.update(
+                status=SOLVE_ERROR,
+                error=f"podman could not run the container (exit code {PODMAN_ERROR_EXIT});"
+                " see the log",
+            )
         elif proc.returncode != 0:
             rec.update(status="solve_failed", error=f"exit code {proc.returncode}")
         elif (final := _take_output(scratch, name, solution_dir)) is None:

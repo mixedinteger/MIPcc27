@@ -360,6 +360,48 @@ def test_misspelled_bound_side_is_rejected(sample_mps: Path, tmp_path: Path):
     assert any("unknown key" in e for e in res.errors)
 
 
+@pytest.mark.parametrize(
+    "text,error",
+    [
+        # A misspelt key would be dropped: this would read as keep.
+        ('{"rows": {"c3": {"actoin": "relax"}}}', "unknown key(s) ['actoin']"),
+        ('{"rows": {"c1": {"certficate": {"x1": 1}}}}', "unknown key(s) ['certficate']"),
+        # float() takes these; JSON numbers they are not.
+        ('{"rows": {"c1": {"certificate": {"x1": "1"}}}}', "must be a number, got '1'"),
+        ('{"rows": {"c1": {"certificate": {"x1": true}}}}', "must be a number, got True"),
+        ('{"rows": {"c1": {"certificate": {"x1": null}}}}', "must be a number, got None"),
+        ('{"rows": {"c1": {"certificate": null}}}', "must be a JSON object"),
+        # Only a kept element is certified.
+        ('{"rows": {"c3": {"action": "relax", "certificate": {}}}}', "only for a kept element"),
+        # The sections are objects keyed by name.
+        ('{"rows": null}', "'rows' must be a JSON object"),
+        ('{"columns": []}', "'columns' must be a JSON object"),
+        # json.loads would silently keep the last of the two.
+        ('{"rows": {"c3": {"action": "relax"}, "c3": {"action": "keep"}}}', "['c3']"),
+    ],
+    ids=[
+        "misspelt-action",
+        "misspelt-certificate",
+        "string-value",
+        "bool-value",
+        "null-value",
+        "null-certificate",
+        "certificate-on-relax",
+        "null-rows",
+        "list-columns",
+        "duplicate-key",
+    ],
+)
+def test_an_entry_that_is_not_what_the_format_says_is_rejected(
+    sample_mps: Path, tmp_path: Path, text: str, error: str
+):
+    sol_file = tmp_path / "bad.json"
+    sol_file.write_text(text)
+    res = verify_subsystem(sample_mps, sol_file)
+    assert not res.is_valid_solution and not res.is_passed
+    assert any(error in e for e in res.errors), res.errors
+
+
 def test_certificate_naming_unknown_variable_is_invalid(sample_mps: Path, tmp_path: Path):
     """A typo'd variable name means the verified point is not the intended one."""
     sol_file = _write_sol(
@@ -403,8 +445,9 @@ def test_tolerance_is_configurable(sample_mps: Path, tmp_path: Path):
     assert verify_subsystem(sample_mps, sol_file).invalid_certificates
     assert not verify_subsystem(sample_mps, sol_file, tolerance=1e-3).invalid_certificates
 
-    with pytest.raises(ValueError):
-        verify_subsystem(sample_mps, sol_file, tolerance=0.0)
+    for bad in (0.0, -1e-5, 1.1e-2, float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            verify_subsystem(sample_mps, sol_file, tolerance=bad)
 
 
 def test_gzip_compressed_solution_file(sample_mps: Path, tmp_path: Path):
@@ -882,7 +925,7 @@ def test_a_certificate_may_not_satisfy_the_element_it_certifies(tmp_path: Path):
 
     If it satisfies *e* as well it satisfies the whole subsystem, contradicting the
     infeasibility the same run just established -- so it proves nothing.  Here the
-    two conflicting rows are scaled by 1e-9, which puts a full unit of x-space
+    two conflicting rows are scaled by 1e-8, which puts a full unit of x-space
     violation inside the absolute row tolerance; c3 is plainly redundant, so
     accepting these would report a proven IIS for a non-minimal subsystem.
     """
@@ -895,10 +938,10 @@ def test_a_certificate_may_not_satisfy_the_element_it_certifies(tmp_path: Path):
         " L  c2\n"
         " L  c3\n"
         "COLUMNS\n"
-        "    x         OBJ       1.0        c1        1e-9\n"
-        "    x         c2        1e-9       c3        1.0\n"
+        "    x         OBJ       1.0        c1        1e-8\n"
+        "    x         c2        1e-8       c3        1.0\n"
         "RHS\n"
-        "    RHS       c1        1e-9       c2        -1e-9\n"
+        "    RHS       c1        1e-8       c2        -1e-8\n"
         "    RHS       c3        5.0\n"
         "BOUNDS\n"
         " FR BND       x\n"
@@ -970,6 +1013,9 @@ def test_a_huge_certificate_value_cannot_cancel_a_row(tmp_path: Path):
 
     assert res.is_minimal is not True
     assert not res.is_passed
+    # Caught by the arithmetic, not by some other check: k2's true activity is 1.
+    violations = dict(res.invalid_certificates)
+    assert "constraint 'k2': lhs 1 > rhs 0 (violation 1)" in violations["row:pad"]
 
 
 def test_relaxing_every_element_is_not_a_minimality_proof(sample_mps: Path, tmp_path: Path):
