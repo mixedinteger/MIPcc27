@@ -27,7 +27,6 @@ hard-coding the numbers:
 
 ## Time limit
 
-- The limit is 3600 seconds per instance.
 - The limit is measured by the organizers, as wall-clock time from launch to exit, including the
   container's start-up. That measurement is the time reported for the run.
 - At the limit your program receives SIGTERM, and SIGKILL at least 10 seconds later. Leave a margin:

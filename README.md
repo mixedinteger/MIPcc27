@@ -40,9 +40,9 @@ The checker used for evaluation installs straight from GitHub. Choose a solver e
 `solvers` to install all three:
 
 ```bash
-pip install "mipcc-iis-checker[highs] @ git+https://github.com/mixedinteger/MIPcc27.git@v1.0.0b1"
+pip install "mipcc-iis-checker[highs] @ git+https://github.com/mixedinteger/MIPcc27.git@v1.0.0b3"
 # or, as an isolated command:
-uv tool install "mipcc-iis-checker[highs] @ git+https://github.com/mixedinteger/MIPcc27.git@v1.0.0b1"
+uv tool install "mipcc-iis-checker[highs] @ git+https://github.com/mixedinteger/MIPcc27.git@v1.0.0b3"
 ```
 
 Then check a solution against its instance:
@@ -53,7 +53,7 @@ mipcc-iis-checker --instance stein15inf.mps.gz --solution stein15inf.json.gz
 
 Exit code `0` means PASSED, `1` FAILED. Other flags: `--solver {scip,gurobi,highs}`,
 `--time-limit S`, `--tolerance F`, `--output-json report.json`, `--verbose`. The commands above pin
-release `v1.0.0b1`; drop the `@v1.0.0b1` for the latest `main`. Changes between releases are listed
+release `v1.0.0b3`; drop the `@v1.0.0b3` for the latest `main`. Changes between releases are listed
 in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Questions and bug reports
