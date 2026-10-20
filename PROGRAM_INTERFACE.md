@@ -51,7 +51,8 @@ hard-coding the numbers:
 - Read-only filesystem, except `/tmp` (in memory) and `/out`.
 - No capabilities, and a non-root user id that is not chosen by you, so `HOME` may not be writable:
   point tools that write there at `/tmp` (e.g. `ENV HOME=/tmp` in your image).
-- CPU and memory limits are set by the organizers.
+- Each run has at least 32 GB of memory. A run that exceeds its memory may be killed, which makes
+  it a failed run (see Result). CPU limits are set by the organizers.
 
 ## Test it locally
 
