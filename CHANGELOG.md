@@ -19,6 +19,8 @@ Changes to the checker and to the rules it enforces, by release. Pin a release i
   and `-1e300`) or overflow no longer hide a violated row.
 - `--tolerance` (and `verify_subsystem(tolerance=...)`) is capped at 1e-2: it now also sets the
   solvers' tolerances, and Gurobi accepts none looser.
+- `PROGRAM_INTERFACE.md` states the evaluation limits (3600 seconds per instance, at least 8
+  threads) and that commercial solvers cannot be used as subroutines of a submission.
 - A program must not exit with status 125, which podman uses for its own errors
   ([`PROGRAM_INTERFACE.md`](PROGRAM_INTERFACE.md#result)).
 

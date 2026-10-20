@@ -16,11 +16,18 @@ A submission is a program, preferably a container image.
 
 ## Environment
 
-- `MIPCC_TIME_LIMIT` — seconds of wall-clock time for this run. Always set.
-- `MIPCC_THREADS` — how many threads you may use. **May be unset**; then use your default.
+Your program is told its budget through two environment variables. Read them instead of
+hard-coding the numbers:
+
+- `MIPCC_TIME_LIMIT` — the wall-clock seconds this run may take, 3600 in the evaluation. A run
+  still going at the limit is killed and its output discarded, so write your solution before it
+  (see Time limit below).
+- `MIPCC_THREADS` — the number of threads to use, set to at least 8 in the evaluation. If unset
+  (for example when you run the program yourself), use your own default.
 
 ## Time limit
 
+- The limit is 3600 seconds per instance.
 - The limit is measured by the organizers, as wall-clock time from launch to exit, including the
   container's start-up. That measurement is the time reported for the run.
 - At the limit your program receives SIGTERM, and SIGKILL at least 10 seconds later. Leave a margin:
@@ -33,6 +40,10 @@ A submission is a program, preferably a container image.
 - Don't exit with status `125`; podman reserves it for its own errors.
 - Only a solution the [checker](README.md#check-your-solutions) passes counts. Use it to check your
   own output. The checker time is not included in your computing time.
+
+## Allowed software
+
+- Commercial solvers cannot be used as subroutines of the final submission.
 
 ## Sandbox
 
