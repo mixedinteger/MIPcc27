@@ -5,6 +5,9 @@ Changes to the checker and to the rules it enforces, by release. Pin a release i
 
 ## Unreleased
 
+- The original counts (`original_bounds`, `total_original`) include the bounds of integer
+  variables. They become elements of a subsystem that relaxes their integrality, so a kept count
+  could exceed the original one (kept shares above 100% in the benchmark report).
 - A subsystem is judged feasible only on a point satisfying it to within the certificate tolerance
   (1e-5, absolute). Previously the verdict was the solver's own, at its default tolerances, so it
   could depend on the backend.

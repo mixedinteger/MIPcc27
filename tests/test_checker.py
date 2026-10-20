@@ -1113,10 +1113,11 @@ def test_a_relaxed_bound_of_an_integer_variable_still_applies(tmp_path: Path):
 
     assert res.is_infeasible is True
     assert res.is_passed
-    # Neither bound is an element: not kept, not removed, and the full model has none.
+    # Neither bound is an element while x stays integer: not kept, not removed.  The
+    # original counts them, as relaxing x's integrality would make them elements.
     assert res.kept == ElementCounts(rows=2, bounds=0, integers=1)
     assert res.removed == ElementCounts(rows=0, bounds=0, integers=0)
-    assert res.original == ElementCounts(rows=2, bounds=0, integers=1)
+    assert res.original == ElementCounts(rows=2, bounds=2, integers=1)
     assert any("bounds of integer variables always apply" in n for n in res.notes)
 
 
@@ -1231,3 +1232,15 @@ def test_an_integrality_certificate_keeps_that_variables_bounds(tmp_path: Path):
 
     bad = verify_subsystem(mps, _write_sol(tmp_path, "bad.json", solution(0.7)))
     assert [e for e, _ in bad.invalid_certificates] == ["integer:x"]
+
+
+def test_original_counts_bound_every_kept_count(tmp_path: Path):
+    """Relaxing x's integrality makes its bounds elements; the original still covers them."""
+    mps = _write(tmp_path / "intbound.mps", _INT_BOUND_MPS)
+    sol = _write_sol(
+        tmp_path, "relaxed.json", {"columns": {"x": {"integrality": {"action": "relax"}}}}
+    )
+    res = verify_subsystem(mps, sol)
+
+    assert res.kept == ElementCounts(rows=2, bounds=2, integers=0)
+    assert res.original == ElementCounts(rows=2, bounds=2, integers=1)

@@ -61,6 +61,9 @@ with one about the copy.
 - `--solution-dir` and `--instance-dir` each mark a result `stale` when that directory no longer
   holds the file that was checked.
 - `--instances` restricts the report to the models named.
+- `--only-started` leaves out the models whose job never started (neither a result nor a log in
+  `--out-dir`), e.g. those excluded from this run. A job killed after starting the program still
+  shows, as `not_run`.
 
 It exits `1` when a model has no verdict, as `benchmark.run` does.
 
@@ -111,9 +114,9 @@ instance                       pass  rows%  bnds%  ints%  cert%   iis(s) check(s
 stein10i                          Y   53.3  100.0  100.0   22.9     0.53     0.00 ok
 ```
 
-- `rows%`/`bnds%`/`ints%` — kept elements as a share of the original, per kind (`<0.1` if tiny).
-  Bounds of integer variables are not elements, so they are in neither count: `bnds%` is `-` for a
-  model whose variables are all integer.
+- `rows%`/`bnds%`/`ints%` — kept elements as a share of all the model's elements, per kind (`<0.1`
+  if tiny). The bounds of integer variables are in the original count, as they become elements of a
+  subsystem that relaxes their integrality; `bnds%` is `-` only for a model with no bounds at all.
 - `cert%` — share of kept elements with a certificate that verified; `100.0` is a proven IIS.
 - `iis(s)` — the program's wall clock, measured by the harness. `check(s)` — the infeasibility
   check.

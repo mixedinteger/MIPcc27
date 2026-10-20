@@ -399,13 +399,12 @@ def verify_subsystem(
         return res
 
     model = backend.np_model
-    # The full model's size under the same rule as a subsystem's: every integer
-    # variable is in J there, so no bound of an integer variable counts.
+    # Every element of the model, the bounds of integer variables included: those
+    # count in a subsystem that relaxes their integrality, so this bounds any kept
+    # count.  (The full model's own size, with no integer variable relaxed, can be
+    # smaller than a subsystem's.)
     res.original = ElementCounts.of(
-        model.rows,
-        model.lower_bounds - model.integers,
-        model.upper_bounds - model.integers,
-        model.integers,
+        model.rows, model.lower_bounds, model.upper_bounds, model.integers
     )
 
     try:

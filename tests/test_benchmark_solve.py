@@ -556,3 +556,17 @@ def test_bad_solve_flags_are_usage_errors(corpus, monkeypatch, extra):
     with pytest.raises(SystemExit) as e:
         _main(monkeypatch, *_dirs(corpus), *extra)
     assert e.value.code == 2
+
+
+def test_collect_only_started_leaves_out_models_never_launched(corpus, monkeypatch):
+    """bar was never launched; baz's job was killed after the program started."""
+    for name in ("bar", "baz"):
+        (corpus["instances"] / f"{name}.mps").write_text(f"NAME {name}\nENDATA\n")
+    monkeypatch.setattr(bench, "_run_verify", _fake_checker([]))
+    assert _main(monkeypatch, *_job(corpus, "ok")) == 0
+    (corpus["logs"] / "baz.log").write_text("killed\n")
+    out = corpus["tmp"] / "out"
+
+    _collect(monkeypatch, *_dirs(corpus), "--only-started")
+    records = json.loads((out / "summary.json").read_text())
+    assert [(r["name"], r["status"]) for r in records] == [("baz", "not_run"), ("foo", "ok")]

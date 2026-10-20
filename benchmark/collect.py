@@ -5,6 +5,7 @@ Reads ``<out-dir>/results/<model>.json`` and writes ``summary.json`` and
 ``summary.csv`` next to it; runs neither the program nor the checker, and writes
 nothing else.  Needs no instances or solutions: given, they add the models never
 run (``--instance-dir``) and flag results whose files changed since (both dirs).
+``--only-started`` drops the models whose job never started.
 """
 
 from __future__ import annotations
@@ -40,6 +41,13 @@ from .solve import file_sha256
 def result_names(result_dir: Path) -> list[str]:
     """The models with a result record in *result_dir*."""
     return sorted(p.stem for p in result_dir.glob("*.json") if is_model_name(p.stem))
+
+
+def was_started(name: str, out_dir: Path) -> bool:
+    """Whether a job ran *name*: it left a result, or at least the program's log."""
+    return (out_dir / "results" / f"{name}.json").exists() or (
+        out_dir / "logs" / f"{name}.log"
+    ).exists()
 
 
 def collect_one(
@@ -103,6 +111,12 @@ def _parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         help="Only these models (names or model files).",
     )
+    ap.add_argument(
+        "--only-started",
+        action="store_true",
+        help="Only the models whose job started (a result or a log in --out-dir): with"
+        " --instance-dir, a model never launched is left out rather than not_run.",
+    )
     return ap
 
 
@@ -123,6 +137,8 @@ def main() -> int:
         names = model_names(args.instance_dir)
     else:
         names = result_names(result_dir)
+    if args.only_started:
+        names = [n for n in names if was_started(n, args.out_dir)]
     if not names:
         ap.error(f"no models to report (no results in {result_dir})")
 
