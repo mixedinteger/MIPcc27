@@ -9,6 +9,7 @@ after a clean exit is copied into the solution directory.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import re
@@ -69,6 +70,9 @@ class Launcher:
     # 0 sets no limit: rootless podman can apply none without a delegated cgroup,
     # e.g. under Slurm, whose own cgroup then bounds the job.
     pids_limit: int = 4096
+    # The image's content ID (see :func:`resolve_image`).  When set, that exact image runs,
+    # whatever the tag is moved to meanwhile, and a recorded run can tell which one it was.
+    image_id: Optional[str] = None
 
     def __post_init__(self):
         if (self.template is None) == (self.image is None):
@@ -101,8 +105,30 @@ class Launcher:
             "-v", f"{instance.resolve()}:/data/{instance.name}:ro",
             "-v", f"{solution.parent.resolve()}:/out",
             *self.container_args,
-            self.image, f"/data/{instance.name}", f"/out/{solution.name}",
+            self.image_id or self.image, f"/data/{instance.name}", f"/out/{solution.name}",
         ]  # fmt: skip
+
+
+def resolve_image(launcher: Launcher) -> Launcher:
+    """*launcher* with its image tag pinned to the content ID it names right now.
+
+    A tag such as ``team:latest`` can be rebuilt between runs; the ID cannot.  Raises
+    ``RuntimeError`` if podman has no such image, so a missing image fails before any
+    model is run instead of inside the first timed one.
+    """
+    if launcher.image is None:
+        return launcher
+    cmd = [*launcher.podman, "image", "inspect", "--format", "{{.Id}}", launcher.image]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"could not run {cmd[0]!r} to look up the image: {e}") from e
+    image_id = out.stdout.strip()
+    if out.returncode != 0 or not image_id:
+        raise RuntimeError(
+            f"image {launcher.image!r} not found by podman: {out.stderr.strip() or 'no output'}"
+        )
+    return dataclasses.replace(launcher, image_id=image_id)
 
 
 @dataclass(frozen=True)
@@ -115,12 +141,15 @@ class SolveConfig:
     log_dir: Path
 
 
-def solve_is_reusable(prev: Optional[dict], config: SolveConfig, solution: Optional[Path]) -> bool:
+def solve_is_reusable(
+    prev: Optional[dict], config: SolveConfig, solution: Optional[Path], instance: Path
+) -> bool:
     """Whether the previous run *prev* already answers this one.
 
-    Same program and limits, and — if it produced a solution — that solution still
-    on disk, byte for byte.  A failure is reused too (re-running a timeout costs the
-    whole limit again); a launcher error never is.
+    Same program (a container by its image ID, not its tag), same instance bytes and
+    limits, and — if it produced a solution — that solution still on disk, byte for
+    byte.  A failure is reused too (re-running a timeout costs the whole limit again);
+    a launcher error never is.
     """
     if not prev or prev.get("status") not in SOLVE_FAILURES | {SOLVED}:
         return False
@@ -129,6 +158,10 @@ def solve_is_reusable(prev: Optional[dict], config: SolveConfig, solution: Optio
         config.time_limit,
         config.threads,
     ):
+        return False
+    if prev.get("image_id") != config.launcher.image_id:
+        return False
+    if prev.get("instance_sha256") != file_sha256(instance):
         return False
     if prev["status"] != SOLVED:
         return True
@@ -205,6 +238,8 @@ def run_solve(name: str, instance: Path, solution_dir: Path, config: SolveConfig
     rec = {
         "status": None,
         "launcher": launcher.describe(),
+        "image_id": launcher.image_id,
+        "instance_sha256": file_sha256(instance),
         "argv": argv,
         "time_limit": config.time_limit,
         "threads": config.threads,

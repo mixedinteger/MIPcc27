@@ -175,7 +175,9 @@ def test_a_command_that_cannot_start_is_the_judges_problem(corpus):
     rec = _solve(corpus, launcher)
     assert rec["status"] == "solve_error" and "could not start" in rec["error"]
     # Never reused: the judge may have fixed the command since.
-    assert not bsolve.solve_is_reusable(rec, _config(corpus, launcher), None)
+    assert not bsolve.solve_is_reusable(
+        rec, _config(corpus, launcher), None, corpus["instances"] / "foo.mps"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -295,19 +297,92 @@ def test_a_launcher_is_a_command_or_an_image():
         Launcher(template=("x",), image="y")
 
 
-def test_reuse_needs_the_same_program_limits_and_solution(corpus):
+def test_reuse_needs_the_same_program_limits_instance_and_solution(corpus):
     launcher = _launcher(corpus["tmp"], "ok")
     rec = _solve(corpus, launcher, time_limit=5.0, threads=2)
     solution = corpus["sols"] / "foo.json"
+    instance = corpus["instances"] / "foo.mps"
     same = _config(corpus, launcher, 5.0, 2)
 
-    assert bsolve.solve_is_reusable(rec, same, solution)
-    assert not bsolve.solve_is_reusable(rec, _config(corpus, launcher, 6.0, 2), solution)
-    assert not bsolve.solve_is_reusable(rec, _config(corpus, launcher, 5.0, 4), solution)
-    assert not bsolve.solve_is_reusable(rec, _config(corpus, Launcher(template=("x",))), solution)
-    assert not bsolve.solve_is_reusable(rec, same, None)
+    assert bsolve.solve_is_reusable(rec, same, solution, instance)
+    other = _config(corpus, launcher, 6.0, 2)
+    assert not bsolve.solve_is_reusable(rec, other, solution, instance)
+    other = _config(corpus, launcher, 5.0, 4)
+    assert not bsolve.solve_is_reusable(rec, other, solution, instance)
+    other = _config(corpus, Launcher(template=("x",)))
+    assert not bsolve.solve_is_reusable(rec, other, solution, instance)
+    assert not bsolve.solve_is_reusable(rec, same, None, instance)
     solution.write_text('{"rows": {"r": {"action": "relax"}}}')
-    assert not bsolve.solve_is_reusable(rec, same, solution)
+    assert not bsolve.solve_is_reusable(rec, same, solution, instance)
+
+
+def test_a_changed_instance_is_solved_again(corpus):
+    """The same file name with other contents is another problem."""
+    launcher = _launcher(corpus["tmp"], "ok")
+    rec = _solve(corpus, launcher)
+    solution = corpus["sols"] / "foo.json"
+    instance = corpus["instances"] / "foo.mps"
+    config = _config(corpus, launcher)
+    assert bsolve.solve_is_reusable(rec, config, solution, instance)
+
+    instance.write_text("NAME foo\nROWS\nENDATA\n")
+    assert not bsolve.solve_is_reusable(rec, config, solution, instance)
+    # A record from before the instance was hashed is not trusted either.
+    assert not bsolve.solve_is_reusable(
+        {**rec, "instance_sha256": None}, config, solution, instance
+    )
+
+
+def test_a_rebuilt_image_is_solved_again(corpus):
+    """A tag is not an identity: the image ID is."""
+    old = Launcher(image="team:latest", image_id="sha256:aaa")
+    rec = {
+        "status": "solve_failed",
+        "launcher": old.describe(),
+        "image_id": "sha256:aaa",
+        "instance_sha256": bsolve.file_sha256(corpus["instances"] / "foo.mps"),
+        "time_limit": 5.0,
+        "threads": None,
+    }
+    instance = corpus["instances"] / "foo.mps"
+    assert bsolve.solve_is_reusable(rec, _config(corpus, old), None, instance)
+    rebuilt = Launcher(image="team:latest", image_id="sha256:bbb")
+    assert not bsolve.solve_is_reusable(rec, _config(corpus, rebuilt), None, instance)
+
+
+def test_the_container_runs_by_image_id_and_the_record_names_it(corpus):
+    launcher = Launcher(image="team:latest", image_id="sha256:abc")
+    argv = launcher.argv("foo", corpus["instances"] / "foo.mps", corpus["sols"] / "foo.json", "c")
+    assert "team:latest" not in argv and "sha256:abc" in argv
+    assert "team:latest" in Launcher(image="team:latest").argv(
+        "foo", corpus["instances"] / "foo.mps", corpus["sols"] / "foo.json", "c"
+    )
+
+    rec = _solve(corpus, _launcher(corpus["tmp"], "ok"))
+    assert rec["image_id"] is None
+    assert rec["instance_sha256"] == bsolve.file_sha256(corpus["instances"] / "foo.mps")
+
+
+def _inspecting_podman(corpus, image_id, code=0):
+    podman = corpus["tmp"] / "podman_inspect"
+    podman.write_text(
+        f'#!/bin/sh\n[ "$1 $2" = "image inspect" ] || exit 9\n'
+        f'[ {code} = 0 ] && echo {image_id} || echo "no such image" >&2\nexit {code}\n'
+    )
+    podman.chmod(0o755)
+    return Launcher(image="team:latest", podman=(str(podman),))
+
+
+def test_resolve_image_pins_the_tag_to_its_id(corpus):
+    pinned = bsolve.resolve_image(_inspecting_podman(corpus, "sha256:abc123"))
+    assert pinned.image_id == "sha256:abc123" and pinned.image == "team:latest"
+    command = Launcher(template=("x",))
+    assert bsolve.resolve_image(command) is command
+
+
+def test_resolve_image_fails_before_any_model_when_the_image_is_missing(corpus):
+    with pytest.raises(RuntimeError, match="team:latest.*no such image"):
+        bsolve.resolve_image(_inspecting_podman(corpus, "", code=1))
 
 
 # --------------------------------------------------------------------------

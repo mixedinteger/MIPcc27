@@ -38,6 +38,7 @@ from .solve import (
     Launcher,
     SolveConfig,
     file_sha256,
+    resolve_image,
     run_solve,
     solve_is_reusable,
 )
@@ -281,7 +282,9 @@ def run_one(
     # 1. Produce the solution, when the harness runs the program.
     if solve is not None:
         prev = (cached or {}).get("solve")
-        if not force and solve_is_reusable(prev, solve, find_solution(name, solution_dir)):
+        if not force and solve_is_reusable(
+            prev, solve, find_solution(name, solution_dir), instance_path
+        ):
             log(f"{name}: reusing the program's last run ({prev['status']})")
             rec["solve"] = prev
         else:
@@ -620,13 +623,17 @@ def _launcher(args, ap) -> Optional[Launcher]:
     if args.container_pids_limit < 0:
         ap.error(f"--container-pids-limit must be >= 0, got {args.container_pids_limit}")
     if args.container:
-        return Launcher(
+        launcher = Launcher(
             image=args.container,
             container_args=tuple(shlex.split(args.container_args)),
             podman=tuple(shlex.split(args.podman)),
             network=args.container_network,
             pids_limit=args.container_pids_limit,
         )
+        try:
+            return resolve_image(launcher)
+        except RuntimeError as e:
+            ap.error(str(e))
     template = tuple(shlex.split(args.solve_cmd))
     try:
         for token in template:

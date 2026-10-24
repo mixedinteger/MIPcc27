@@ -89,8 +89,11 @@ The first four are verdicts; the rest are the harness's problems.
 
 Re-running a job only redoes what changed:
 
-- The program is not relaunched while the previous run used the same program, `--solve-time-limit`
-  and `--threads`, and its solution is unchanged on disk. A failed run is reused too.
+- The program is not relaunched while the previous run used the same program, the same instance
+  file (by SHA-256), `--solve-time-limit` and `--threads`, and its solution is unchanged on disk.
+  A container counts as the same program only if its image ID is the same: the harness resolves
+  the `--container` tag to the ID at the start and runs that ID, so a rebuilt image under the same
+  tag is run again. A failed run is reused too.
 - The check is not repeated while the cached result has the same SHA-256 for both the solution and
   the instance, the same solver, and the same checker version and certificate tolerance (so a
   checker upgrade re-checks everything). Only `ok`, `invalid_solution` and `verify_unknown` are

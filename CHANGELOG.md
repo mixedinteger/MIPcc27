@@ -3,6 +3,13 @@
 Changes to the checker and to the rules it enforces, by release. Pin a release in your install (see
 [`README.md`](README.md#check-your-solutions)) to keep its behaviour fixed.
 
+## Unreleased
+
+- Benchmark harness: a cached program run is reused only for the same instance bytes (it used to
+  match on the model name alone) and, with `--container`, the same image: the tag is resolved to the
+  image ID at the start, the container runs by that ID, and the record stores it. A tag that
+  podman does not know now stops the run before the first model.
+
 ## 1.0.0b3
 
 - The original counts (`original_bounds`, `total_original`) include the bounds of integer
