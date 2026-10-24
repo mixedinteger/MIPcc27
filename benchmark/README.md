@@ -40,7 +40,10 @@ uv run python -m benchmark.collect --out-dir out/teamA --instance-dir public_iis
 - `--solve-cmd TEMPLATE` runs a command instead, with `{instance}`, `{solution}` and `{name}` filled
   in, no shell and **no sandbox** — for trusted programs, local tests, or `apptainer`.
 - The program writes into an empty scratch directory; only a regular file left there after exit 0 is
-  copied into `--solution-dir`. Any earlier solution for the model is deleted first.
+  copied into `--solution-dir`, replacing any earlier solution for the model. The harness replaces only
+  a file its own last run wrote (same SHA-256); any other `<model>.json[.gz]` stops the whole run
+  before anything is deleted, so pointing `--solution-dir` at reference solutions cannot destroy
+  them. Use an empty directory per team, or `--overwrite-solutions` to allow it.
 - Without `--container`/`--solve-cmd`, the harness checks the solutions already in `--solution-dir`.
 
 The exit code is `0` when every model reached a verdict — passed or failed — and `1` when the

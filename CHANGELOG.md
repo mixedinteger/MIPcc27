@@ -9,6 +9,9 @@ Changes to the checker and to the rules it enforces, by release. Pin a release i
   match on the model name alone) and, with `--container`, the same image: the tag is resolved to the
   image ID at the start, the container runs by that ID, and the record stores it. A tag that
   podman does not know now stops the run before the first model.
+- Benchmark harness: running the program no longer deletes a solution file the harness did not
+  write (for example the reference solutions, when `--solution-dir` points at them). Such a file
+  stops the run before the first model; `--overwrite-solutions` allows the replacement.
 
 ## 1.0.0b3
 

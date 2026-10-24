@@ -111,6 +111,18 @@ def find_solution(name: str, solution_dir: Path) -> Optional[Path]:
     return found[0] if found else None
 
 
+def foreign_solutions(name: str, solution_dir: Path, prev: Optional[dict]) -> list[Path]:
+    """Solution files for *name* that the program's run would delete but the harness did not write.
+
+    Running the program replaces ``<name>.json[.gz]``.  The only file the harness may
+    replace unasked is the one its own last run recorded (same SHA-256); anything else
+    -- reference solutions, another team's output -- belongs to someone else.
+    """
+    written = (prev or {}).get("solution_sha256") if (prev or {}).get("status") == SOLVED else None
+    files = [solution_dir / f"{name}{ext}" for ext in SOLUTION_EXTS]
+    return [p for p in files if p.is_file() and (written is None or file_sha256(p) != written)]
+
+
 def _input_hashes(solution_path: Path, instance_path: Path) -> dict:
     """What a cached result must have been made from to be reused."""
     return {
@@ -260,8 +272,13 @@ def run_one(
     time_limit: Optional[float] = None,
     force: bool = False,
     solve: Optional[SolveConfig] = None,
+    overwrite: bool = False,
 ) -> dict:
-    """Solve (if *solve*), check, and record one model in ``<result_dir>/<name>.json``."""
+    """Solve (if *solve*), check, and record one model in ``<result_dir>/<name>.json``.
+
+    Raises ``FileExistsError`` before running the program if that would replace a solution
+    the harness did not write (see :func:`foreign_solutions`), unless *overwrite*.
+    """
     if not is_model_name(name):
         raise ValueError(f"instance name must be a model name, not a path: {name!r}")
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -288,6 +305,12 @@ def run_one(
             log(f"{name}: reusing the program's last run ({prev['status']})")
             rec["solve"] = prev
         else:
+            foreign = [] if overwrite else foreign_solutions(name, solution_dir, prev)
+            if foreign:
+                raise FileExistsError(
+                    f"{name}: the program would replace {foreign[0]}, which this harness did not "
+                    "write; use an empty --solution-dir, or --overwrite-solutions"
+                )
             log(f"{name}: running the program (limit {solve.time_limit:g}s) ...")
             rec["solve"] = run_solve(name, instance_path, solution_dir, solve)
             s = rec["solve"]
@@ -606,6 +629,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Wall-clock limit for the program (required with --container/--solve-cmd).",
     )
     solve.add_argument("--threads", type=int, metavar="N", help="Passed as MIPCC_THREADS.")
+    solve.add_argument(
+        "--overwrite-solutions",
+        action="store_true",
+        help="Let the program replace solution files this harness did not write (by default "
+        "such a file stops the run before anything is deleted).",
+    )
     ap.add_argument("--force", action="store_true", help="Ignore cached results.")
     return ap
 
@@ -674,6 +703,20 @@ def main() -> int:
     if not names:
         ap.error("no models to process")
 
+    if solve is not None and not args.overwrite_solutions:
+        # Refuse before the first model, not half-way through a long run.
+        foreign = []
+        for name in names:
+            prev = (_read_json(result_dir / f"{name}.json") or {}).get("solve")
+            foreign += foreign_solutions(name, args.solution_dir, prev)
+        if foreign:
+            shown = ", ".join(p.name for p in foreign[:5]) + (", ..." if len(foreign) > 5 else "")
+            ap.error(
+                f"{len(foreign)} solution file(s) in {args.solution_dir} were not written by this "
+                f"harness and would be deleted ({shown}); use an empty --solution-dir, or "
+                "--overwrite-solutions"
+            )
+
     records = []
     for i, name in enumerate(names, 1):
         log(f"=== [{i}/{len(names)}] {name} ===")
@@ -686,6 +729,7 @@ def main() -> int:
             args.verify_time_limit,
             args.force,
             solve,
+            args.overwrite_solutions,
         )
         log(f"{name} -> {rec['status']}")
         records.append(rec)

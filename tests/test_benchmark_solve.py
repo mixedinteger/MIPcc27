@@ -427,6 +427,76 @@ def test_run_one_solves_then_checks(corpus, monkeypatch):
     assert row["iis_time"] == rec["solve"]["wall_s"] and row["solve_exit_code"] == 0
 
 
+def test_a_solution_the_harness_did_not_write_is_not_deleted(corpus, monkeypatch):
+    monkeypatch.setattr(bench, "_run_verify", _fake_checker([]))
+    corpus["sols"].mkdir()
+    reference = corpus["sols"] / "foo.json"
+    reference.write_text('{"rows": {"keep": {"action": "relax"}}}')
+
+    with pytest.raises(FileExistsError, match="did not write"):
+        _run_one(corpus, _launcher(corpus["tmp"], "ok"))
+    assert reference.read_text() == '{"rows": {"keep": {"action": "relax"}}}'
+    assert not corpus["results"].joinpath("foo.json").exists()
+
+
+def test_overwrite_lets_the_program_replace_a_foreign_solution(corpus, monkeypatch):
+    monkeypatch.setattr(bench, "_run_verify", _fake_checker([]))
+    corpus["sols"].mkdir()
+    (corpus["sols"] / "foo.json").write_text('{"rows": {"keep": {"action": "relax"}}}')
+    rec = bench.run_one(
+        "foo",
+        corpus["instances"],
+        corpus["sols"],
+        corpus["results"],
+        solve=_config(corpus, _launcher(corpus["tmp"], "ok")),
+        overwrite=True,
+    )
+    assert rec["status"] == "ok"
+    assert (corpus["sols"] / "foo.json").read_text() == _SOLUTION
+
+
+def test_the_harness_replaces_its_own_earlier_solution_unasked(corpus, monkeypatch):
+    monkeypatch.setattr(bench, "_run_verify", _fake_checker([]))
+    launcher = _launcher(corpus["tmp"], "ok")
+    _run_one(corpus, launcher)
+    assert _run_one(corpus, launcher, force=True)["status"] == "ok"
+
+    # Edited since: no longer the harness's file.
+    (corpus["sols"] / "foo.json").write_text('{"rows": {"r": {"action": "relax"}}}')
+    with pytest.raises(FileExistsError):
+        _run_one(corpus, launcher, force=True)
+
+
+def test_foreign_solutions_names_what_would_be_lost(corpus):
+    corpus["sols"].mkdir()
+    (corpus["sols"] / "foo.json.gz").write_bytes(b"x")
+    assert bench.foreign_solutions("foo", corpus["sols"], None) == [corpus["sols"] / "foo.json.gz"]
+    assert bench.foreign_solutions("bar", corpus["sols"], None) == []
+
+
+def test_main_refuses_a_directory_of_foreign_solutions_before_running(corpus, monkeypatch, capsys):
+    corpus["sols"].mkdir()
+    (corpus["sols"] / "foo.json").write_text(_SOLUTION)
+    marker = corpus["tmp"] / "ran"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run",
+            "--instance-dir", str(corpus["instances"]),
+            "--solution-dir", str(corpus["sols"]),
+            "--out-dir", str(corpus["tmp"] / "out"),
+            "--solve-cmd", f"{sys.executable} -c 'open(\"{marker}\", \"w\")'",
+            "--solve-time-limit", "5",
+        ],
+    )  # fmt: skip
+    with pytest.raises(SystemExit) as e:
+        bench.main()
+    assert e.value.code == 2 and not marker.exists()
+    assert "foo.json" in capsys.readouterr().err
+    assert (corpus["sols"] / "foo.json").read_text() == _SOLUTION
+
+
 def test_a_second_run_reuses_the_program_and_the_check(corpus, monkeypatch):
     calls = []
     monkeypatch.setattr(bench, "_run_verify", _fake_checker(calls))
