@@ -53,6 +53,11 @@ pathlib.Path(sys.argv[3]).write_text(str(child.pid))
 time.sleep(60)
 """,
     # Ignores SIGTERM, so only SIGKILL stops it.
+    # Answers with a named pipe, which a read would block on forever.
+    "fifo": """
+import os, sys
+os.mkfifo(sys.argv[2])
+""",
     "stubborn": """
 import signal, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -195,6 +200,51 @@ def test_a_template_is_filled_per_token_without_a_shell(tmp_path):
         str(tmp_path / "out" / "foo.json"),
         "a;b",  # passed through literally: there is no shell to interpret it
     ]
+
+
+def test_a_container_never_pulls_and_has_a_podman_side_watchdog(tmp_path):
+    def argv(**kw):
+        return Launcher(image="team:1").argv(
+            "a", tmp_path / "a.mps", tmp_path / "scratch" / "a.json", "c1", **kw
+        )
+
+    assert "--pull=never" in argv()
+    assert "--timeout" not in argv()
+    # Past the harness's own kill (limit + grace), so it only matters if the harness is gone.
+    timeout = int(argv(time_limit=3600)[argv(time_limit=3600).index("--timeout") + 1])
+    assert timeout > 3600 + bsolve.KILL_GRACE_S
+
+
+def test_stopping_the_harness_kills_the_program(corpus):
+    """Ctrl-C / SIGTERM reach the harness only: the program has its own session."""
+    import signal
+
+    side = corpus["tmp"] / "hang.side"
+    launcher = _launcher(corpus["tmp"], "hang")
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    old = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 1.5)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _solve(corpus, launcher, time_limit=30.0)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+    child = int(side.read_text())
+    deadline = time.monotonic() + 5
+    while _alive(child) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(child)
+    assert not list(corpus["sols"].glob(".solving-*"))  # the scratch directory went too
+
+
+def test_a_named_pipe_is_refused_without_blocking(corpus):
+    rec = _solve(corpus, _launcher(corpus["tmp"], "fifo"), time_limit=5.0)
+    assert rec["status"] == "solve_failed" and "no solution" in rec["error"]
 
 
 def test_a_container_is_sandboxed_and_sees_only_its_files(tmp_path):

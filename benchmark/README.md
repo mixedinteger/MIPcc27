@@ -44,6 +44,11 @@ uv run python -m benchmark.collect --out-dir out/teamA --instance-dir public_iis
   a file its own last run wrote (same SHA-256); any other `<model>.json[.gz]` stops the whole run
   before anything is deleted, so pointing `--solution-dir` at reference solutions cannot destroy
   them. Use an empty directory per team, or `--overwrite-solutions` to allow it.
+- A container is never pulled during a run (`--pull=never`): the image must already be in podman's
+  store, and a missing one stops the run before the first model. Stopping the harness (Ctrl-C,
+  SIGTERM) kills the program and its container; podman's `--timeout` also stops it a little after
+  the limit if the harness itself is killed. A `--solve-cmd` program that detaches a child with
+  `setsid` is not tracked: that mode is for trusted programs.
 - Without `--container`/`--solve-cmd`, the harness checks the solutions already in `--solution-dir`.
 
 The exit code is `0` when every model reached a verdict — passed or failed — and `1` when the

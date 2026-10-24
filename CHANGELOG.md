@@ -12,6 +12,12 @@ Changes to the checker and to the rules it enforces, by release. Pin a release i
 - Benchmark harness: running the program no longer deletes a solution file the harness did not
   write (for example the reference solutions, when `--solution-dir` points at them). Such a file
   stops the run before the first model; `--overwrite-solutions` allows the replacement.
+- Benchmark harness: stopping it (Ctrl-C, or SIGTERM such as `scancel`) now kills the running
+  program and its container, which had survived. The container is started with `--pull=never`, so a
+  download is never part of the timed run, and with podman's own `--timeout` (past the harness's
+  kill), a backstop if the harness is killed outright. A program's output is opened once without
+  following symlinks and judged through that descriptor, so it cannot be swapped between the check
+  and the copy; a named pipe is refused.
 
 ## 1.0.0b3
 

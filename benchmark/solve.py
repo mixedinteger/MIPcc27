@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -27,6 +28,9 @@ from typing import Optional
 
 # Seconds between SIGTERM and SIGKILL once the time limit is reached.
 KILL_GRACE_S = 10.0
+
+# Seconds past the time limit (and the kill grace) before podman's own timeout stops a container.
+WATCHDOG_MARGIN_S = KILL_GRACE_S + 30.0
 
 # Solution file extensions, in the order tried.  The checker reads both.
 SOLUTION_EXTS = (".json", ".json.gz")
@@ -85,18 +89,30 @@ class Launcher:
         network = "" if self.network == "none" else f" --network {self.network}"
         return f"podman: {self.image}{network} {' '.join(self.container_args)}".rstrip()
 
-    def argv(self, name: str, instance: Path, solution: Path, container: str = "") -> list[str]:
+    def argv(
+        self,
+        name: str,
+        instance: Path,
+        solution: Path,
+        container: str = "",
+        time_limit: Optional[float] = None,
+    ) -> list[str]:
         """The command writing *solution* from *instance*.
 
         A template is filled per token and run without a shell.  A container gets no
         network (unless *network* says otherwise), no capabilities, a read-only root,
-        and only the instance (read-only) and the scratch directory mounted.
+        and only the instance (read-only) and the scratch directory mounted.  It never
+        pulls an image (the timed run must not include a download), and with *time_limit*
+        podman itself stops it shortly after the harness would: a backstop that still
+        works if the harness is killed.
         """
         if self.template is not None:
             fields = {"instance": str(instance), "solution": str(solution), "name": name}
             return [token.format(**fields) for token in self.template]
         return [
-            *self.podman, "run", "--rm", "--init", "--name", container,
+            *self.podman, "run", "--rm", "--init", "--pull=never", "--name", container,
+            *(("--timeout", str(math.ceil(time_limit + WATCHDOG_MARGIN_S)))
+              if time_limit else ()),
             "--network", self.network, "--read-only", "--tmpfs", "/tmp",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             *(("--pids-limit", str(self.pids_limit)) if self.pids_limit else ()),
@@ -194,18 +210,26 @@ def _take_output(scratch: Path, name: str, solution_dir: Path) -> Optional[Path]
     """Copy the program's solution out of *scratch*; None if there is none.
 
     Only a regular file counts — a symlink could point at another team's solution —
-    and copying rather than moving also breaks any hard link.
+    and copying rather than moving also breaks any hard link.  The file is opened once,
+    refusing symlinks, and judged and copied through that descriptor, so nothing can be
+    swapped in between the check and the copy.
     """
     for ext in SOLUTION_EXTS:
         produced = scratch / f"{name}{ext}"
         try:
-            if not stat.S_ISREG(produced.lstat().st_mode):
-                continue
+            # O_NONBLOCK so a FIFO cannot hang the open; it is rejected below.
+            fd = os.open(produced, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except FileNotFoundError:
             continue
-        final = solution_dir / produced.name
-        tmp = solution_dir / f".{produced.name}.{uuid.uuid4().hex}.tmp"
-        shutil.copyfile(produced, tmp, follow_symlinks=False)
+        except OSError:  # ELOOP for a symlink, or a file we cannot read
+            continue
+        with os.fdopen(fd, "rb") as src:
+            if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                continue
+            final = solution_dir / produced.name
+            tmp = solution_dir / f".{produced.name}.{uuid.uuid4().hex}.tmp"
+            with open(tmp, "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
         os.replace(tmp, final)
         return final
     return None
@@ -234,7 +258,9 @@ def run_solve(name: str, instance: Path, solution_dir: Path, config: SolveConfig
         env["MIPCC_THREADS"] = str(config.threads)
 
     scratch = Path(tempfile.mkdtemp(prefix=f".solving-{name}-", dir=solution_dir))
-    argv = launcher.argv(name, instance, scratch / f"{name}.json", container or "")
+    argv = launcher.argv(
+        name, instance, scratch / f"{name}.json", container or "", config.time_limit
+    )
     rec = {
         "status": None,
         "launcher": launcher.describe(),
@@ -267,15 +293,22 @@ def run_solve(name: str, instance: Path, solution_dir: Path, config: SolveConfig
                 return rec
             timed_out = False
             try:
-                proc.wait(timeout=config.time_limit)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _stop(proc, signal.SIGTERM, container, launcher.podman)
                 try:
-                    proc.wait(timeout=KILL_GRACE_S)
+                    proc.wait(timeout=config.time_limit)
                 except subprocess.TimeoutExpired:
-                    _stop(proc, signal.SIGKILL, container, launcher.podman)
-                    proc.wait()
+                    timed_out = True
+                    _stop(proc, signal.SIGTERM, container, launcher.podman)
+                    try:
+                        proc.wait(timeout=KILL_GRACE_S)
+                    except subprocess.TimeoutExpired:
+                        _stop(proc, signal.SIGKILL, container, launcher.podman)
+                        proc.wait()
+            except BaseException:
+                # The harness itself is being stopped (Ctrl-C, SIGTERM): the program is
+                # started in its own session, so no signal reaches it unless we send one.
+                _stop(proc, signal.SIGKILL, container, launcher.podman)
+                proc.wait()
+                raise
             rec["wall_s"] = round(time.monotonic() - t0, 3)
             rec["exit_code"] = proc.returncode
             try:  # anything the program left running in its group goes too

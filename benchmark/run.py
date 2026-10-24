@@ -15,6 +15,7 @@ import io
 import json
 import os
 import shlex
+import signal
 import sys
 import tempfile
 import time
@@ -672,7 +673,13 @@ def _launcher(args, ap) -> Optional[Launcher]:
     return Launcher(template=template)
 
 
+def _raise_interrupt(signum, frame):
+    """Make SIGTERM (``scancel``, ``kill``) stop a run like Ctrl-C, killing the program first."""
+    raise KeyboardInterrupt(f"terminated by {signal.Signals(signum).name}")
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _raise_interrupt)
     ap = _parser()
     args = ap.parse_args()
     if args.verify_time_limit is not None and args.verify_time_limit <= 0:
